@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Content Research & Brief Generator</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #f8f9fa; color: #1a1a2e; min-height: 100vh; }
+  header { background: #1a1a2e; color: white; padding: 24px 40px; }
+  header h1 { font-size: 22px; font-weight: 600; }
+  header p { font-size: 13px; color: #9ca3af; margin-top: 4px; }
+  .container { max-width: 780px; margin: 40px auto; padding: 0 24px; }
+  .card { background: white; border-radius: 12px; padding: 32px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); margin-bottom: 24px; }
+  label { font-size: 13px; font-weight: 600; color: #374151; display: block; margin-bottom: 8px; }
+  input[type="text"], input[type="password"], textarea {
+    width: 100%; padding: 12px 16px; border: 1.5px solid #e5e7eb;
+    border-radius: 8px; font-size: 15px; outline: none; transition: border 0.2s;
+    font-family: 'Segoe UI', sans-serif;
+  }
+  input:focus, textarea:focus { border-color: #1a1a2e; }
+  button {
+    background: #1a1a2e; color: white; border: none; padding: 13px 28px;
+    border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer;
+    transition: opacity 0.2s; width: 100%; margin-top: 8px;
+  }
+  button:hover { opacity: 0.85; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .status { font-size: 13px; color: #6b7280; margin-top: 12px; min-height: 20px; }
+  .status.loading { color: #2563eb; }
+  .status.error { color: #dc2626; }
+  .output { display: none; }
+  .output.visible { display: block; }
+  .brief-section { margin-bottom: 20px; }
+  .brief-label { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: #6b7280; text-transform: uppercase; margin-bottom: 6px; }
+  .brief-content { font-size: 15px; line-height: 1.7; color: #1a1a2e; white-space: pre-wrap; }
+  .divider { border: none; border-top: 1px solid #f3f4f6; margin: 20px 0; }
+  .tag { display: inline-block; background: #f0fdf4; color: #15803d; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px; margin-bottom: 16px; }
+  .setup-note { font-size: 12px; color: #9ca3af; margin-top: 6px; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #e5e7eb; border-top-color: #2563eb; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AI Content Research & Brief Generator</h1>
+  <p>Built by Osmita Khan — automates the research phase of content writing</p>
+</header>
+
+<div class="container">
+
+  <div class="card">
+    <div class="tag">One-time setup</div>
+    <label>Tavily API Key <span style="font-weight:400;color:#9ca3af">(free at tavily.com)</span></label>
+    <input type="password" id="tavily-key" placeholder="tvly-...">
+    <p class="setup-note">Your key is only used in this browser session.</p>
+  </div>
+
+  <div class="card">
+    <label>Content topic</label>
+    <input type="text" id="topic-input" placeholder="e.g. MFS growth in Bangladesh, digital lending trends..." />
+    <button id="run-btn" onclick="runAgent()">Generate content brief</button>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="card output" id="output-card">
+    <div class="brief-section">
+      <div class="brief-label">Hook</div>
+      <div class="brief-content" id="out-hook"></div>
+    </div>
+    <hr class="divider">
+    <div class="brief-section">
+      <div class="brief-label">Key stats & facts</div>
+      <div class="brief-content" id="out-stats"></div>
+    </div>
+    <hr class="divider">
+    <div class="brief-section">
+      <div class="brief-label">Target audience</div>
+      <div class="brief-content" id="out-audience"></div>
+    </div>
+    <hr class="divider">
+    <div class="brief-section">
+      <div class="brief-label">Suggested outline</div>
+      <div class="brief-content" id="out-outline"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// Uses Tavily's CORS-friendly endpoint + Claude API via Anthropic
+async function searchTavily(topic, apiKey) {
+  // Use Tavily's extract endpoint which supports CORS
+  const res = await fetch(`https://api.tavily.com/search`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      query: topic,
+      search_depth: "basic",
+      max_results: 5,
+      include_answer: true
+    })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || err.message || "Search failed. Check your Tavily key.");
+  }
+  const data = await res.json();
+  return { results: data.results || [], answer: data.answer || "" };
+}
+
+function buildSummary(results, answer) {
+  let text = "";
+  if (answer) text += `Overview: ${answer}\n\n`;
+  results.forEach((r, i) => {
+    text += `[Source ${i+1}] ${r.title}\n${(r.content || "").slice(0, 400)}\n\n`;
+  });
+  return text;
+}
+
+async function generateBrief(topic, summary) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1000,
+      messages: [{
+        role: "user",
+        content: `You are a content strategist preparing a research brief for a writer.
+
+Topic: ${topic}
+
+Recent research:
+${summary}
+
+Write a content brief with EXACTLY these four labeled sections:
+
+HOOK:
+(one strong opening sentence for an article)
+
+KEY STATS & FACTS:
+(3 to 5 bullet points citing source numbers, e.g. Source 2)
+
+TARGET AUDIENCE:
+(who cares about this and why, 1-2 sentences)
+
+SUGGESTED OUTLINE:
+(intro, 2-3 body sections, closing point)
+
+Only use facts from the research. Be specific and concise.`
+      }]
+    })
+  });
+  if (!res.ok) throw new Error("Brief generation failed. Try again.");
+  const data = await res.json();
+  return data.content[0].text;
+}
+
+function parseAndDisplay(text) {
+  const sections = { hook: "", stats: "", audience: "", outline: "" };
+  const hookMatch = text.match(/HOOK:\s*([\s\S]*?)(?=\n[A-Z &]+:)/i);
+  const statsMatch = text.match(/KEY STATS[^:]*:\s*([\s\S]*?)(?=\n[A-Z &]+:)/i);
+  const audienceMatch = text.match(/TARGET AUDIENCE:\s*([\s\S]*?)(?=\n[A-Z &]+:)/i);
+  const outlineMatch = text.match(/SUGGESTED OUTLINE:\s*([\s\S]*?)$/i);
+
+  if (hookMatch) sections.hook = hookMatch[1].trim();
+  if (statsMatch) sections.stats = statsMatch[1].trim();
+  if (audienceMatch) sections.audience = audienceMatch[1].trim();
+  if (outlineMatch) sections.outline = outlineMatch[1].trim();
+
+  // fallback: show raw text if parsing fails
+  if (!sections.hook && !sections.stats) {
+    sections.hook = text;
+  }
+
+  document.getElementById("out-hook").textContent = sections.hook;
+  document.getElementById("out-stats").textContent = sections.stats;
+  document.getElementById("out-audience").textContent = sections.audience;
+  document.getElementById("out-outline").textContent = sections.outline;
+  document.getElementById("output-card").classList.add("visible");
+}
+
+function setStatus(msg, type="") {
+  const el = document.getElementById("status");
+  el.className = "status " + type;
+  el.innerHTML = type === "loading" ? `<span class="spinner"></span>${msg}` : msg;
+}
+
+async function runAgent() {
+  const topic = document.getElementById("topic-input").value.trim();
+  const tavilyKey = document.getElementById("tavily-key").value.trim();
+
+  if (!tavilyKey) return setStatus("Please enter your Tavily API key.", "error");
+  if (!topic) return setStatus("Please enter a topic.", "error");
+
+  document.getElementById("run-btn").disabled = true;
+  document.getElementById("output-card").classList.remove("visible");
+
+  try {
+    setStatus("Searching the web for recent sources...", "loading");
+    const { results, answer } = await searchTavily(topic, tavilyKey);
+
+    if (!results.length && !answer) throw new Error("No results found. Try a different topic.");
+
+    setStatus("Generating your content brief...", "loading");
+    const summary = buildSummary(results, answer);
+    const brief = await generateBrief(topic, summary);
+
+    parseAndDisplay(brief);
+    setStatus("");
+  } catch (err) {
+    setStatus(err.message, "error");
+  } finally {
+    document.getElementById("run-btn").disabled = false;
+  }
+}
+
+document.getElementById("topic-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") runAgent();
+});
+</script>
+</body>
+</html>
